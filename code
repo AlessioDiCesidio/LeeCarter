@@ -1,0 +1,768 @@
+##########LEE CARTER MODEL ON NORWAY DEATH RATES
+
+
+
+######## LEE CARTER HIGH RANGE ----
+
+library(dplyr)
+library(stringr)
+library(tidyr)
+setwd("C:/Users/aless/Downloads")
+norway_data<- read.table("Norway_lt_1x1.txt", skip = 2, header=TRUE)
+
+data<-data.frame(norway_data$Year,norway_data$Age,norway_data$mx, norway_data$ex)
+colnames(data) <- c("Year", "Age", "mx","ex")
+data_subset <- subset(data, Year >= 1900 & Year <= 2020)
+
+data_subset$Age <- gsub("\\+", "", data_subset$Age) 
+data_subset$Age <- as.numeric(data_subset$Age)      
+data_subset <- subset(data_subset, Age <= 100)
+data_subset$mx[data_subset$mx==0]<-0.00001
+data_subset$logmx<-log(data_subset$mx)
+
+rates<-filter(data_subset)$mx
+rates[rates == 0] <- 0.0001
+M <- matrix(log(rates), 121, 101, byrow = TRUE)
+a<-colMeans(M)
+for(j in 1:101) M[,j] <- M[,j] - a[j]
+d<-svd(M,1,1)
+
+b <- d$v/sum(d$v)
+k <- d$u * sum(d$v) * d$d[1]
+
+library(ggplot2)
+data2 <- filter(data_subset, Year == 1900 | Year == 2020) %>%
+  mutate(year = factor(Year),
+         fit = c(exp(a + b * k[1]), exp(a + b * k[121])))
+
+data2020 <- filter(data_subset,Year == 2020) %>%
+  mutate(year = factor(Year),
+         fit =exp(a + b * k[121]))
+
+ggplot(data2020, aes(x = Age, y = mx, color = year)) +
+  geom_point() +
+  geom_line(aes(y = fit, color = year)) +
+  scale_y_log10() +
+  labs(title = "Lee-Carter Fits for 1900 and 2020",
+       x = "Age",
+       y = "Mortality Rate") +
+  theme_minimal()
+
+# Plot fitted results for 1900 and 2020
+ggplot(data2, aes(x = Age, y = mx, color = year)) +
+  geom_point() +
+  geom_line(aes(y = fit, color = year)) +
+  scale_y_log10() +
+  labs(title = "Lee-Carter Fits for 1900 and 2020",
+       x = "Age",
+       y = "Mortality Rate") +
+  theme_minimal()
+
+
+trend <- data.frame(year = 1900:2020, k = k)
+ggplot(trend, aes(year, k)) + geom_line() +
+  ggtitle("Lee-Carter k for 1900-2020")
+
+trend <- data.frame(age = 0:100, a=a)
+ggplot(trend, aes(age, a)) + geom_line() +
+  ggtitle("Lee-Carter a for 1900-2020")
+
+trend <- data.frame(age = 0:100, b=b)
+ggplot(trend, aes(age, b)) + geom_line() +
+  ggtitle("Lee-Carter b for 1900-2020")
+
+num_years <- length(unique(data_subset$Year))
+num_ages <- length(unique(data_subset$Age))
+
+# Initialize the predictions matrix
+predictions <- matrix(0, nrow = num_years, ncol = num_ages)
+
+# Fill the predictions matrix with the fitted values
+for (i in 1:length(k)) {
+  predictions[i, ] <- exp(a + b * k[i])
+}
+
+residui<-predictions-M
+
+library(lattice)
+residuals_matrix <- matrix(residui, nrow = num_years, byrow = TRUE)
+levelplot(t(residui), xlab = "Age", ylab = "Year", main = "Level Plot of Residuals")
+image(t(residui))
+################### Train/test split ------
+
+train_data <- filter(data_subset, Year <= 2000)
+test_data <- filter(data_subset, Year > 2000)
+
+train_data$mx[train_data$mx == 0] <- 0.00001
+test_data$mx[test_data$mx == 0] <- 0.00001
+
+years <- unique(train_data$Year)
+ages <- unique(train_data$Age)
+M <- matrix(log(train_data$mx), nrow = length(years), ncol = length(ages), byrow = TRUE)
+a <- colMeans(M)
+for (j in 1:ncol(M)) M[, j] <- M[, j] - a[j]
+d <- svd(M, nu = 1, nv = 1)
+
+b <- d$v / sum(d$v)
+k <- d$u * sum(d$v) * d$d[1]
+
+# Forecast k using random walk with drift
+t_forecast <- length(unique(test_data$Year))
+forecast_kt <- forecast::rwf(k, h = t_forecast, drift = TRUE)
+kt_forecast <- forecast_kt$mean
+
+plot_years <- c(years, unique(test_data$Year))
+plot_k <- c(k, kt_forecast)
+plot_data <- data.frame(Year = plot_years, k = plot_k)
+plot_data$Period <- ifelse(plot_data$Year <= 2000, "Estimated", "Forecasted")
+
+# Plotting the k values
+ggplot(plot_data, aes(x = Year, y = k, color = Period)) +
+  geom_point(size = 2) +
+  geom_line(aes(group = 1), size = 1) +
+  scale_color_manual(values = c("blue", "red")) +
+  labs(title = "Estimated and Forecasted k_t Values",
+       x = "Calendar Year",
+       y = "k_t Values") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Plotting the results
+par(mfrow = c(2, 2))
+
+# Plotting a
+plot(ages, a, type = 'l', col = 'blue', main = 'a values', xlab = 'Age', ylab = 'a')
+
+# Plotting b
+plot(ages, b, type = 'l', col = 'red', main = 'b values', xlab = 'Age', ylab = 'b')
+
+# Plotting k
+plot(years, k, type = 'l', col = 'green', main = 'k values', xlab = 'Year', ylab = 'k')
+
+
+
+################# lee carter function----
+
+
+lcg  <- function(X) {
+  logax  <- apply(X,2,mean)
+  ax     <- exp(logax)
+  svdout <- svd(sweep(X,2,logax))
+  bx     <- svdout$v[,1] / sum(svdout$v[,1])
+  kt     <- svdout$u[,1] * svdout$d[1] * sum(svdout$v[,1])
+  
+  comb <- function(x,t,a,b,k) { a[x]+b[x]*k[t] }
+  fit <- outer(c(1:ncol(X)), c(1:nrow(X)), comb, a=logax, b=bx, k=kt )
+  
+  return (list(logax=logax, ax=ax, bx=bx, kt=kt, fit=fit))
+}
+
+
+LCqx <- lcg(M)
+residui <- (LCqx$fit) - t(M)
+dim(residui)
+tfit <- t(LCqx$fit) 
+plot(tfit[,1], type="l")
+
+tresidui <- t(residui)
+image(tresidui)
+library(lattice)
+levelplot(tresidui,xlab="time",ylab="age")
+
+train_data$mx[train_data$mx == 0] <- 0.000001
+test_data$mx[test_data$mx == 0] <- 0.000001
+
+
+
+
+
+lcg <- function(M_train, M_test) {
+  # Calculate parameters using training data
+  logax_train <- apply(M_train, 2, mean)
+  ax_train <- exp(logax_train)
+  logax_test <- apply(M_test, 2, mean)
+  ax_test <- exp(logax_test)
+  svdout_train <- svd(sweep(M_train, 2, logax_train))
+  bx_train <- svdout_train$v[, 1] / sum(svdout_train$v[, 1])
+  kt_train <- svdout_train$u[, 1] * svdout_train$d[1] * sum(svdout_train$v[, 1])
+  
+  # Forecast kt values for the test data
+  t_forecast <- nrow(M_test)
+  forecast_kt <- forecast::rwf(kt_train, h = t_forecast, drift = TRUE)
+  kt_forecast <- forecast_kt$mean
+  
+  # Calculate parameters for test years using forecasted kt values
+  svdout_test <- svd(sweep(M_test, 2, logax_test))
+  bx_test <- svdout_test$v[, 1] / sum(svdout_test$v[, 1])
+  
+  # Combine train and forecasted kt values
+  kt_all <- c(kt_train, kt_forecast)
+  
+  # Define function for combination
+  comb <- function(x, t, a, b, k) { a[x] + b[x] * k[t] }
+  
+  # Forecast mortality rates for the test data using kt from training data
+  fit <- outer(c(1:ncol(M_train)), c(1:nrow(M_test)), comb, a = logax_train, b = bx_train, k = kt_all)
+  
+  # Combine bx and a values
+  bx_all <- c(bx_train, bx_test)
+  ax_all <- c(ax_train, ax_test)
+  logax_all <- c(logax_train, logax_test)
+  
+  # Return results
+  return(list(logax = logax_all, ax = ax_all, bx = bx_all, kt = kt_all, fit = fit, bx_forecast = bx_test))
+}
+
+# Example usage:
+M_train <- matrix(log(train_data$mx), nrow = length(unique(train_data$Year)), ncol = length(unique(train_data$Age)), byrow = TRUE)
+M_test <- matrix(log(test_data$mx), nrow = length(unique(test_data$Year)), ncol = length(unique(test_data$Age)), byrow = TRUE)
+lc_result <- lcg(M_train, M_test)
+
+
+
+
+
+
+
+
+
+
+########## LEE-CARTER with less YEAR range----
+
+data_subset_1950 <- subset(data, Year >= 1950 & Year <= 2020)
+
+data_subset_1950$Age <- gsub("\\+", "", data_subset_1950$Age) 
+data_subset_1950$Age <- as.numeric(data_subset_1950$Age)      
+data_subset_1950 <- subset(data_subset_1950, Age <= 100)
+data_subset_1950$mx[data_subset_1950$mx==0]<-0.00001
+data_subset_1950$logmx<-log(data_subset_1950$mx)
+
+train_data_1950 <- filter(data_subset_1950, Year <= 2005)
+test_data_1950 <- filter(data_subset_1950, Year > 2005)
+train_data_1950$mx[train_data_1950$mx==0]<-0.00001
+test_data_1950$mx[test_data_1950$mx==0]<-0.00001
+
+years_1950 <- unique(train_data_1950$Year)
+ages_1950 <- unique(train_data_1950$Age)
+M_1950 <- matrix(log(train_data_1950$mx), nrow = length(years_1950), ncol = length(ages_1950), byrow = TRUE)
+a_1950 <- colMeans(M_1950)
+for (j in 1:ncol(M_1950)) M_1950[, j] <- M_1950[, j] - a_1950[j]
+d_1950 <- svd(M_1950, nu = 1, nv = 1)
+
+b_1950 <- d_1950$v / sum(d_1950$v)
+k_1950 <- d_1950$u * sum(d_1950$v) * d_1950$d[1]
+
+# Forecast k using random walk with drift
+t_forecast_1950 <- length(unique(test_data_1950$Year))
+forecast_kt_1950 <- forecast::rwf(k_1950, h = t_forecast_1950, drift = TRUE)
+kt_forecast_1950 <- forecast_kt_1950$mean
+
+plot_years_1950 <- c(years_1950, unique(test_data_1950$Year))
+plot_k_1950 <- c(k_1950, kt_forecast_1950)
+plot_data_1950 <- data.frame(Year = plot_years_1950, k = plot_k_1950)
+plot_data_1950$Period <- ifelse(plot_data_1950$Year <= 2005, "Estimated", "Forecasted")
+
+# Plotting the k values
+ggplot(plot_data_1950, aes(x = Year, y = k, color = Period)) +
+  geom_point(size = 2) +
+  geom_line(aes(group = 1), size = 1) +
+  scale_color_manual(values = c("blue", "red")) +
+  labs(title = "Estimated and Forecasted k_t Values",
+       x = "Calendar Year",
+       y = "k_t Values") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Plotting the results
+par(mfrow = c(2, 2))
+
+# Plotting a
+plot(ages_1950, a_1950, type = 'l', col = 'blue', main = 'a values', xlab = 'Age', ylab = 'a')
+
+# Plotting b
+plot(ages_1950, b_1950, type = 'l', col = 'red', main = 'b values', xlab = 'Age', ylab = 'b')
+
+# Plotting k
+plot(years_1950, k_1950, type = 'l', col = 'green', main = 'k values', xlab = 'Year', ylab = 'k')
+
+
+
+
+
+
+
+
+
+
+
+
+
+#lee carter function
+lcg  <- function(X) {
+  logax  <- apply(X,2,mean)
+  ax     <- exp(logax)
+  svdout <- svd(sweep(X,2,logax))
+  bx     <- svdout$v[,1] / sum(svdout$v[,1])
+  kt     <- svdout$u[,1] * svdout$d[1] * sum(svdout$v[,1])
+  
+  comb <- function(x,t,a,b,k) { a[x]+b[x]*k[t] }
+  fit <- outer(c(1:ncol(X)), c(1:nrow(X)), comb, a=logax, b=bx, k=kt )
+  
+  return (list(logax=logax, ax=ax, bx=bx, kt=kt, fit=fit))
+}
+
+
+LCqx <- lcg(M)
+residui <- (LCqx$fit) - t(M)
+dim(residui)
+tfit <- t(LCqx$fit) #trasposta della matrice dei qx stimati
+
+plot(tfit[,1], type="l") #plot 1 colonna 
+
+#superfice dei residui
+tresidui <- t(residui)
+image(tresidui)
+library(lattice)
+levelplot(tresidui,xlab="time",ylab="age")
+
+
+
+
+#################LEE CARTER WITH LESS AGE RANGE -----
+      
+data_subset_age <- subset(data_subset, Age >= 40 & Age<=90)
+data_subset_age$mx[data_subset_age$mx==0]<-0.00001
+data_subset_age$logmx<-log(data_subset_age$mx)
+
+train_data_age <- filter(data_subset_age, Year <= 2000)
+test_data_age <- filter(data_subset_age, Year > 2000)
+
+years_age <- unique(train_data_age$Year)
+ages_age <- unique(train_data_age$Age)
+M_age <- matrix(log(train_data_age$mx), nrow = length(years_age), ncol = length(ages_age), byrow = TRUE)
+a_age <- colMeans(M_age)
+for (j in 1:ncol(M_age)) M_age[, j] <- M_age[, j] - a_age[j]
+d_age <- svd(M_age, nu = 1, nv = 1)
+
+b_age <- d_age$v / sum(d_age$v)
+k_age <- d_age$u * sum(d_age$v) * d_age$d[1]
+
+# Forecast k using random walk with drift
+t_forecast_age <- length(unique(test_data_age$Year))
+forecast_kt_age <- forecast::rwf(k_age, h = t_forecast_age, drift = TRUE)
+k_aget_forecast <- forecast_kt_age$mean
+
+plot_years_age <- c(years_age, unique(test_data_age$Year))
+plot_k_age <- c(k_age, k_aget_forecast)
+plot_data_age <- data.frame(Year = plot_years_age, k_age = plot_k_age)
+plot_data_age$Period <- ifelse(plot_data_age$Year <= 2000, "Estimated", "Forecasted")
+
+# Plotting the k values
+ggplot(plot_data_age, aes(x = Year, y = k_age, color = Period)) +
+  geom_point(size = 2) +
+  geom_line(aes(group = 1), size = 1) +
+  scale_color_manual(values = c("blue", "red")) +
+  labs(title = "Estimated and Forecasted k_t Values",
+       x = "Calendar Year",
+       y = "k_t Values") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Plotting the results
+par(mfrow = c(2, 2))
+
+# Plotting a
+plot(ages_age, a_age, type = 'l', col = 'blue', main = 'a values', xlab = 'Age', ylab = 'a')
+
+# Plotting b
+plot(ages_age, b_age, type = 'l', col = 'red', main = 'b values', xlab = 'Age', ylab = 'b')
+
+# Plotting k
+plot(years_age, k_age, type = 'l', col = 'green', main = 'k values', xlab = 'Year', ylab = 'k')
+
+
+
+
+#lee carter function
+lcg  <- function(X) {
+  logax  <- apply(X,2,mean)
+  ax     <- exp(logax)
+  svdout <- svd(sweep(X,2,logax))
+  bx     <- svdout$v[,1] / sum(svdout$v[,1])
+  kt     <- svdout$u[,1] * svdout$d[1] * sum(svdout$v[,1])
+  
+  comb <- function(x,t,a,b,k) { a[x]+b[x]*k[t] }
+  fit <- outer(c(1:ncol(X)), c(1:nrow(X)), comb, a=logax, b=bx, k=kt )
+  
+  return (list(logax=logax, ax=ax, bx=bx, kt=kt, fit=fit))
+}
+
+
+LCqx <- lcg(M)
+residui <- (LCqx$fit) - t(M)
+dim(residui)
+tfit <- t(LCqx$fit) #trasposta della matrice dei qx stimati
+
+plot(tfit[,1], type="l") #plot 1 colonna 
+
+#superfice dei residui
+tresidui <- t(residui)
+image(tresidui)
+library(lattice)
+levelplot(tresidui,xlab="time",ylab="age")
+
+
+
+##########################################
+############ LEE CARTER WITH ML------
+
+library(tensorflow)
+library(keras)
+keras::install_keras()
+library(keras)
+
+library(data.table)
+library(reshape2)
+library(ggplot2)
+library(tidyverse)
+library(keras)
+library(reticulate)
+use_virtualenv("r-reticulate")
+
+
+rmse = function (truth, prediction)  {
+  sqrt(mean((prediction - truth)^2))
+}
+mae = function(truth, prediction){
+  mean(abs(prediction-truth))
+}
+
+scale_min_max = function(dat,dat_test)  {
+  min_dat = min(dat)
+  max_dat = max(dat)
+  dat_scaled=(dat-min_dat)/(max_dat-min_dat)
+  dat_scaled_test = (dat_test-min_dat)/(max_dat-min_dat)
+  return(list(train = dat_scaled, test = dat_scaled_test, min = min_dat, max=max_dat))
+}
+
+scale_z = function(dat,dat_test)  {
+  mean_dat = mean(dat)
+  sd_dat = sd(dat)
+  dat_scaled=(dat-mean_dat)/(sd_dat)
+  dat_scaled_test = (dat_test-mean_dat)/(sd_dat)
+  return(list(train = dat_scaled, test = dat_scaled_test, mean_dat = mean_dat, sd_dat=sd_dat))
+}
+
+# Model
+
+DNN_norway = function(train,test)  {
+  #scale mx
+  scaled = scale_min_max(train$logmx, test$logmx)
+  train$mx_scale = scaled$train
+  test$mx_scale = scaled$test
+  
+  #scale e0
+  scaled2 = scale_min_max(train$ex, test$ex)
+  train$e0_scale = scaled2$train
+  test$e0_scale = scaled2$test
+  
+  #Regression
+  train_reg <- train[, c("Year", "Age", "mx_scale", "e0_scale"), ]
+  test_reg <- test[, c("Year", "Age", "mx_scale", "e0_scale"), ]
+  
+  year_scale = scale_min_max(train_reg$Year,test_reg$Year)
+  train_reg$Year = year_scale[[1]]
+  test_reg$Year = year_scale[[2]]
+  
+  #train
+  x = list(Year = train_reg$Year,
+           Age = train_reg$Age, e0=train_reg$e0_scale)
+  y = (main_output= train_reg$mx_scale)
+  
+  #test
+  x_test = list(Year = test_reg$Year,
+                Age = test_reg$Age,e0=test_reg$e0_scale)
+  y_test = (main_output= test_reg$mx_scale)
+  
+  # Let's use embedding layers as in R. Richman and M.WÃ¼thrich 2019
+  
+  require(keras)
+  tensorflow::set_random_seed(1)
+  # Embedding layers
+  e0 <- layer_input(shape = c(1), dtype = 'float32', name = 'e0')
+  Year <- layer_input(shape = c(1), dtype = 'float32', name = 'Year')
+  Age <- layer_input(shape = c(1), dtype = 'int32', name = 'Age')
+
+  Age_embed = Age %>% 
+    layer_embedding(input_dim = 101, output_dim = 5,input_length = 1, name = 'Age_embed') %>%
+    keras::layer_flatten()
+  
+  
+  main_output <- layer_concatenate(list(e0,Year,Age_embed)) %>% 
+    layer_dense(units = 128, activation = 'relu') %>% 
+    layer_dropout(0.10) %>% 
+    layer_dense(units = 128, activation = 'relu') %>% 
+    layer_dropout(0.10) %>% 
+    layer_dense(units = 1, activation = 'sigmoid', name = 'main_output')
+  
+  model <- keras_model(
+    inputs = c(Year,Age,e0), 
+    outputs = c(main_output))
+  
+  adam = optimizer_adam(0.0005)
+  lr_callback = callback_reduce_lr_on_plateau(factor=.80, patience = 5, verbose=1, cooldown = 5, min_lr = 0.00005)
+  model_callback = callback_model_checkpoint(filepath = "best_model.keras", verbose = 1,save_best_only = TRUE)
+  
+  model %>% compile(
+    optimizer = adam,
+    loss = "mse")
+
+
+  fit = model %>% fit(
+    x = x,
+    y = y, 
+    epochs = 100,
+    batch_size =  100,verbose = 1, shuffle = T, validation_split = 0.1, callbacks = list(lr_callback,model_callback))
+  
+  model = load_model_hdf5("best_model.keras")
+  test$mx_DNN <-  model %>% predict(x_test)
+  test$mx_DNN <- exp(test$mx_DNN*(scaled$max-scaled$min)+scaled$min)
+  
+  return(test)
+}
+
+DD <- data_subset
+
+train <- DD[DD$Year < 2001, ]
+test <- DD[DD$Year >= 2001, ]
+
+
+# Model
+test <- DNN_norway(train,test)
+
+#Plot actual vs predicted mortality rates
+ggplot(test, aes(x = mx, y = mx_DNN)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(x = "Actual Mortality Rate (mx)", y = "Predicted Mortality Rate (mx_DNN)") +
+  ggtitle("Actual vs Predicted Mortality Rates")
+
+###plot differences in mx
+pred_mx <- matrix(0, nrow = length(kt_forecast), ncol = length(ages))
+for (i in 1:length(kt_forecast)) {
+  pred_mx[i, ] <- exp(a + b * kt_forecast[i])
+}
+
+pred_df <- data.frame(
+  Year = rep(unique(test_data$Year), each = length(ages)),
+  Age = rep(ages, times = length(unique(test_data$Year))),
+  forecast_fit = as.vector(t(pred_mx))
+)
+
+test_data_ml <- left_join(test_data, pred_df, by = c("Year", "Age"))
+test_data_ml <- filter(test_data_ml, Year %in% c(2001, 2020))
+test_ml <- test %>%
+  filter(Year %in% c(2001, 2020))
+
+# Plot the comparison using ggplot2
+ggplot(test_data_ml, aes(x = Age)) +
+  geom_point(aes(y = mx, color = "Actual mx")) +
+  geom_line(aes(y = forecast_fit, color = "Forecasted Fit")) +
+  geom_line(aes(y = test_ml$mx_DNN, color = "DNN Fit")) +
+  facet_wrap(~Year) +
+  scale_y_log10() +
+  labs(title = "Comparison of Actual, Forecasted, and DNN Fits",
+       x = "Age",
+       y = "Mortality Rate") +
+  scale_color_manual(values = c("Actual mx" = "black", "Forecasted Fit" = "blue", "DNN Fit" = "red")) +
+  theme_minimal()
+
+
+selected_years <- data_subset$Year >= 2001 & data_subset$Year <= 2020
+pred_df$logmx<-data_subset$logmx[selected_years]
+pred_df%>%
+  summarise(MAE = mae(logmx, log(forecast_fit)),
+            RMSE = rmse(logmx, log(forecast_fit)))
+
+test %>%
+  summarise(MAE = mae(logmx, log(mx_DNN)),
+            RMSE = rmse(logmx, log(mx_DNN)))
+
+################ LC ML with less YEAR range ----
+
+
+DD_1950 <- data_subset_1950
+
+train_ml_1950 <- DD_1950[DD_1950$Year < 2006, ]
+test_ml_1950 <- DD_1950[DD_1950$Year >= 2006, ]
+
+# Model
+test_1950 <- DNN_norway(train_ml_1950,test_ml_1950)
+
+
+
+ggplot(test_1950, aes(x = mx, y = mx_DNN)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(x = "Actual Mortality Rate (mx)", y = "Predicted Mortality Rate (mx_DNN)") +
+  ggtitle("Actual vs Predicted Mortality Rates")
+
+###plot differences in mx
+pred_mx_1950 <- matrix(0, nrow = length(kt_forecast_1950), ncol = length(ages_1950))
+for (i in 1:length(kt_forecast_1950)) {
+  pred_mx_1950[i, ] <- exp(a_1950 + b_1950 * kt_forecast_1950[i])
+}
+
+pred_df_1950 <- data.frame(
+  Year = rep(unique(test_data_1950$Year), each = length(ages_1950)),
+  Age = rep(ages_1950, times = length(unique(test_data_1950$Year))),
+  forecast_fit_1950 = as.vector(t(pred_mx_1950))
+)
+
+test_data_ml_1950 <- left_join(test_data_1950, pred_df_1950, by = c("Year", "Age"))
+test_data_ml_1950 <- filter(test_data_ml_1950, Year %in% c(2006, 2020))
+test_ml_1950 <- test_1950 %>%
+  filter(Year %in% c(2006, 2020))
+
+# Plot the comparison using ggplot2
+ggplot(test_data_ml_1950, aes(x = Age)) +
+  geom_point(aes(y = mx, color = "Actual mx")) +
+  geom_line(aes(y = test_data_ml_1950$forecast_fit_1950, color = "Forecasted Fit")) +
+  geom_line(aes(y = test_ml_1950$mx_DNN, color = "DNN Fit")) +
+  facet_wrap(~Year) +
+  scale_y_log10() +
+  labs(title = "Comparison of Actual, Forecasted, and DNN Fits",
+       x = "Age",
+       y = "Mortality Rate") +
+  scale_color_manual(values = c("Actual mx" = "black", "Forecasted Fit" = "blue", "DNN Fit" = "red")) +
+  theme_minimal()
+
+selected_years2 <- data_subset_1950$Year >= 2006 & data_subset_1950$Year <= 2020
+pred_df_1950$logmx<-data_subset_1950$logmx[selected_years2]
+pred_df_1950 %>%
+  summarise(MAE = mae(logmx, log(forecast_fit_1950)),
+            RMSE = rmse(logmx, log(forecast_fit_1950)))
+
+test_1950 %>%
+  summarise(MAE = mae(logmx, log(mx_DNN)),
+            RMSE = rmse(logmx, log(mx_DNN)))
+
+############ LC ML with less AGE range ----
+
+DD_age <- data_subset_age
+
+train_ml_age <- DD_age[DD_age$Year < 2001, ]
+test_ml_age <- DD_age[DD_age$Year >= 2001, ]
+
+
+# Model
+test_age <- DNN_norway(train_ml_age,test_ml_age)
+
+ggplot(test_age, aes(x = mx, y = mx_DNN)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(x = "Actual Mortality Rate (mx)", y = "Predicted Mortality Rate (mx_DNN)") +
+  ggtitle("Actual vs Predicted Mortality Rates")
+
+###plot differences in mx
+pred_mx_age <- matrix(0, nrow = length(k_aget_forecast), ncol = length(ages_age))
+for (i in 1:length(k_aget_forecast)) {
+  pred_mx_age[i, ] <- exp(a_age + b_age * k_aget_forecast[i])
+}
+
+pred_df_age <- data.frame(
+  Year = rep(unique(test_data_age$Year), each = length(ages_age)),
+  Age = rep(ages_age, times = length(unique(test_data_age$Year))),
+  forecast_fit_age = as.vector(t(pred_mx_age))
+)
+
+test_data_ml_age <- left_join(test_data_age, pred_df_age, by = c("Year", "Age"))
+test_data_ml_age <- filter(test_data_ml_age, Year %in% c(2001, 2020))
+test_ml_age <- test_age %>%
+  filter(Year %in% c(2001, 2020))
+
+# Plot the comparison using ggplot2
+ggplot(test_data_ml_age, aes(x = Age)) +
+  geom_point(aes(y = mx, color = "Actual mx")) +
+  geom_line(aes(y = forecast_fit_age, color = "Forecasted Fit")) +
+  geom_line(aes(y = test_ml_age$mx_DNN, color = "DNN Fit")) +
+  facet_wrap(~Year) +
+  scale_y_log10() +
+  labs(title = "Comparison of Actual, Forecasted, and DNN Fits",
+       x = "Age",
+       y = "Mortality Rate") +
+  scale_color_manual(values = c("Actual mx" = "black", "Forecasted Fit" = "blue", "DNN Fit" = "red")) +
+  theme_minimal()
+
+
+selected_years3 <- data_subset_age$Year >= 2001 & data_subset_age$Year <= 2020
+pred_df_age$logmx<-data_subset_age$logmx[selected_years3]
+pred_df_age %>%
+  summarise(MAE = mae(logmx, log(forecast_fit_age)),
+            RMSE = rmse(logmx, log(forecast_fit_age)))
+
+test_age %>%
+  summarise(MAE = mae(logmx, log(mx_DNN)),
+            RMSE = rmse(logmx, log(mx_DNN)))
+
+############## Summary results ----
+summary_age <- pred_df_age %>%
+  summarise(
+    MAE_forecast = mae(logmx, log(forecast_fit_age)),
+    RMSE_forecast = rmse(logmx, log(forecast_fit_age))
+  ) %>%
+  mutate(
+    MAE_DNN = test_age %>% summarise(mae(logmx, log(mx_DNN))) %>% pull(),
+    RMSE_DNN = test_age %>% summarise(rmse(logmx, log(mx_DNN))) %>% pull(),
+    Dataset = "Age"
+  )
+
+# Summarize metrics for pred_df_1950
+summary_1950 <- pred_df_1950 %>%
+  summarise(
+    MAE_forecast = mae(logmx, log(forecast_fit_1950)),
+    RMSE_forecast = rmse(logmx, log(forecast_fit_1950))
+  ) %>%
+  mutate(
+    MAE_DNN = test_1950 %>% summarise(mae(logmx, log(mx_DNN))) %>% pull(),
+    RMSE_DNN = test_1950 %>% summarise(rmse(logmx, log(mx_DNN))) %>% pull(),
+    Dataset = "1950"
+  )
+
+# Summarize metrics for pred_df
+summary_all <- pred_df %>%
+  summarise(
+    MAE_forecast = mae(logmx, log(forecast_fit)),
+    RMSE_forecast = rmse(logmx, log(forecast_fit))
+  ) %>%
+  mutate(
+    MAE_DNN = test %>% summarise(mae(logmx, log(mx_DNN))) %>% pull(),
+    RMSE_DNN = test %>% summarise(rmse(logmx, log(mx_DNN))) %>% pull(),
+    Dataset = "All"
+  )
+
+# Combine all summaries into one data frame
+combined_summary <- bind_rows(summary_age, summary_1950, summary_all)
+
+# Print the combined summary table
+print(combined_summary)
+
+
+#Plot
+long_summary <- combined_summary %>%
+  pivot_longer(
+    cols = starts_with("MAE") | starts_with("RMSE"),
+    names_to = c("Metric", "Model"),
+    names_pattern = "(.*)_(.*)",
+    values_to = "Value"
+  )
+
+# Create the plot
+ggplot(long_summary, aes(x = Dataset, y = Value, fill = Model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ Metric, scales = "free_y") +
+  labs(title = "Model Performance Metrics",
+       x = "Dataset",
+       y = "Value",
+       fill = "Model") +
+  theme_minimal()
